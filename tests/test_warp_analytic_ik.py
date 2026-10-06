@@ -111,6 +111,18 @@ def test_batched_wrapper_mapping_without_physics(device):
         cpu.data.qpos[:] = states[i]
         mujoco.mj_forward(cpu.model, cpu.data)
         np.testing.assert_allclose(actual[i], cpu_wrapper.action(actions[i]), atol=3e-5)
+    # Exercise every workspace face on both backends using the same measured poses.
+    for position, direction in [([0.26, -0.34, 0.01], -1), ([0.59, 0.34, 0.34], 1)]:
+        clipped_positions = np.array(positions)
+        clipped_positions[:, cpu._pinch_site_id] = position
+        batched._data.site_xpos = wp.array(clipped_positions, dtype=wp.vec3, device=device)
+        boundary_action = np.array([direction, direction, direction, 0, 0])
+        actual = wrapper.action(boundary_action)
+        for i in range(3):
+            cpu.data.qpos[:] = states[i]
+            mujoco.mj_forward(cpu.model, cpu.data)
+            cpu.data.site_xpos[cpu._pinch_site_id] = position
+            np.testing.assert_allclose(actual[i], cpu_wrapper.action(boundary_action), atol=3e-5)
     assert wrapper.action_space.shape == (3, 5)
     assert wrapper.single_action_space.shape == (5,)
     assert wrapper.action(np.zeros(5)).shape == (3, 7)

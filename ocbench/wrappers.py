@@ -8,6 +8,8 @@ from ocbench import lie
 from ocbench.controllers.ur5e_analytic_ik import AnalyticIKController
 from ocbench.envs.manipulation_env import ManipulationEnv
 
+_CARTESIAN_WORKSPACE_BOUNDS = ((0.25, -0.35, 0.0), (0.60, 0.35, 0.35))
+
 
 def _validated_action(action, shape):
     action = np.asarray(action, dtype=np.float64)
@@ -26,7 +28,8 @@ class CartesianActionWrapper(gym.ActionWrapper):
     (normally 0.05 m, 0.3 rad, and 0.12 gripper units; five times larger in lite
     environments). Positive gripper actions close the fingers, matching the
     underlying environment. Targets are relative to the measured pinch pose,
-    clipped to the environment workspace, then converted to attachment poses.
+    clipped to x [0.25, 0.60], y [-0.35, 0.35], z [0.0, 0.35] meters in world
+    coordinates, then converted to attachment poses.
 
     Joint deltas still obey the underlying environment's action limits, so a
     target may take multiple steps to reach. IK failure holds the arm and keeps
@@ -55,7 +58,7 @@ class CartesianActionWrapper(gym.ActionWrapper):
             raise ValueError('Call reset before computing Cartesian actions.')
         delta = _validated_action(action, (5,)) * base._ee_action_delta
         data, model = base._data, base._model
-        pos = np.clip(data.site_xpos[base._pinch_site_id] + delta[:3], *base._workspace_bounds)
+        pos = np.clip(data.site_xpos[base._pinch_site_id] + delta[:3], *_CARTESIAN_WORKSPACE_BOUNDS)
         rotation = data.site_xmat[base._pinch_site_id].reshape(3, 3)
         yaw = np.arctan2(rotation[1, 0], rotation[0, 0]) + delta[3]
         target_pinch = lie.SE3.from_rotation_and_translation(
@@ -77,6 +80,9 @@ class CartesianActionWrapper(gym.ActionWrapper):
 
 class MjWarpCartesianActionWrapper:
     """Batched counterpart of CartesianActionWrapper, with native Warp IK.
+
+    Uses the same world-coordinate pinch-target workspace as the CPU wrapper:
+    x [0.25, 0.60], y [-0.35, 0.35], z [0.0, 0.35] meters.
 
     action/step accept (nworld, 5), or broadcast a single (5,) action. The usual
     NumPy step interface copies the resulting joint actions to the host.
@@ -150,8 +156,8 @@ class MjWarpCartesianActionWrapper:
                 action,
                 self._arm_qpos_ids,
                 cpu._pinch_site_id,
-                wp.vec3(*cpu._workspace_bounds[0]),
-                wp.vec3(*cpu._workspace_bounds[1]),
+                wp.vec3(*_CARTESIAN_WORKSPACE_BOUNDS[0]),
+                wp.vec3(*_CARTESIAN_WORKSPACE_BOUNDS[1]),
                 wp.vec3(*cpu._T_pa.translation()),
                 wp.mat33(cpu._T_pa.rotation().as_matrix()),
                 self._ee_delta,
