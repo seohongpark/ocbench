@@ -106,75 +106,6 @@ env.close()
 ```
 
 
-### Cartesian actions with analytic inverse kinematics
-
-Optional wrappers expose a five-dimensional action space
-`[dx, dy, dz, dyaw, gripper]`, normalized to `[-1, 1]`:
-
-```python
-import numpy as np
-import ocbench
-from ocbench.wrappers import CartesianActionWrapper, MjWarpCartesianActionWrapper
-
-# Single CPU environment.
-env = CartesianActionWrapper(ocbench.make('block-cpu-single-task1-v0'))
-ob, info = env.reset(seed=0)
-ob, reward, terminated, truncated, info = env.step(np.zeros(5))
-env.close()
-
-# Batched MJWarp environment (requires CUDA and the mjwarp extra).
-env = MjWarpCartesianActionWrapper(ocbench.make('block-single-task1-v0', nworld=1024))
-ob, info = env.reset(seed=0)
-ob, reward, terminated, truncated, info = env.step(np.zeros((1024, 5)))
-env.close()
-```
-
-Translation and yaw are relative to the measured gripper pinch pose, in world
-coordinates, with the gripper pointing down. The default per-step scales are
-0.05 m for each translation axis, 0.3 rad for yaw, and 0.12 for the gripper;
-`action_delta_scale` scales these values (the `lite` variants use a factor of 5).
-Positive gripper actions close the fingers. Position targets are clipped to the
-environment's workspace bounds, and yaw wraps naturally through rotations.
-
-The solver evaluates up to eight analytic branches for the bundled UR5e model,
-checks their forward kinematics, and selects the nearest solution within actuator
-limits. The wrapper converts the pinch target to the arm's attachment-site frame
-and maps the solution through the existing joint-action limits. Consequently,
-a Cartesian target may require multiple steps to reach. If no valid solution
-exists, the arm holds its current joint positions while the gripper command
-remains active; `info['ik_no_solution']` reports this per environment.
-The solver uses the bundled model dimensions and does not check collisions.
-
-The CPU implementation uses NumPy; batched IK uses native Warp kernels. Neither
-requires JAX. The MJWarp wrapper also provides `action_gpu(actions)` and
-`step_cartesian_actions_gpu(actions, done=None)` for `wp.float32` arrays of shape
-`(nworld, 5)` on the simulation device. These avoid copying IK actions to the
-host; the normal `step` interface retains OCBench's NumPy observations and
-transfers. `ik_no_solution_gpu` exposes the device failure flags. Device output
-buffers are reused on the next call. CPU/NumPy actions reject nonfinite inputs;
-nonfinite device action rows hold the arm and gripper and set the failure flag.
-
-Wrappers preserve observations, rewards, and episode handling. Unwrapped
-environments, reset IK, and scripted policies retain their existing behavior.
-Released datasets use seven-dimensional joint actions and are not directly
-compatible with the Cartesian action space.
-
-For standalone attachment-site IK, use
-`ocbench.controllers.AnalyticIKController().solve_with_status(pos, quat, curr_qpos)`.
-The quaternion convention is `(w, x, y, z)`; the result is `(qpos_target, no_solution)`.
-Optional `joint_limits` passed to the controller have shape `(6, 2)`.
-
-To run the kinematics and wrapper tests:
-
-```shell
-pip install -e ".[dev]"
-MUJOCO_GL=disable python -m pytest tests
-```
-
-Installing the `mjwarp` extra also enables Warp parity tests on CPU. CUDA parity
-and simulation tests run when a CUDA device is available, otherwise they skip.
-
-
 # Tasks and datasets
 
 ### Tasks
@@ -307,7 +238,6 @@ This codebase is inspired by or partly uses code from the following repositories
 - [OGBench](https://github.com/seohongpark/ogbench) for the general infrastructure.
 - [MuJoCo](https://github.com/google-deepmind/mujoco) and [MJWarp](https://github.com/google-deepmind/mujoco_warp) for simulation.
 - [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) for the robot descriptions (Universal Robots UR5e and Robotiq 2F-85).
-- [ur-analytic-ik](https://github.com/Victorlouisdg/ur-analytic-ik) for the analytic UR kinematics equations (MIT; see [license](ocbench/controllers/ur_analytic_ik.LICENSE)).
 - [Meta-World](https://github.com/Farama-Foundation/Metaworld) for the objects (drawer, window, and button) in the manipulation environments.
 
 
