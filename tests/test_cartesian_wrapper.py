@@ -47,10 +47,14 @@ def test_failure_holds_arm_and_preserves_gripper(env):
 
 
 @pytest.mark.parametrize(
-    'axis, bound, direction', [(0, 0.25, -1), (0, 0.60, 1), (1, -0.35, -1), (1, 0.35, 1), (2, 0.0, -1), (2, 0.35, 1)]
+    'axis, bound, direction', [(0, 0.10, -1), (0, 0.75, 1), (1, -0.65, -1), (1, 0.65, 1), (2, 0.0, -1), (2, 0.45, 1)]
 )
-def test_workspace_clips_pinch_target(env, monkeypatch, axis, bound, direction):
+@pytest.mark.parametrize('workspace_scale', [1.0, 0.8])
+def test_workspace_clips_pinch_target(env, monkeypatch, axis, bound, direction, workspace_scale):
     base = env.unwrapped
+    # Custom environment bounds must also flow through the wrapper.
+    base._workspace_bounds *= workspace_scale
+    bound *= workspace_scale
     original_bounds = base._workspace_bounds.copy()
     position = np.array([0.4, 0.0, 0.2])
     position[axis] = bound - direction * 0.01

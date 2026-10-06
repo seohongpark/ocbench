@@ -112,7 +112,7 @@ def test_batched_wrapper_mapping_without_physics(device):
         mujoco.mj_forward(cpu.model, cpu.data)
         np.testing.assert_allclose(actual[i], cpu_wrapper.action(actions[i]), atol=3e-5)
     # Exercise every workspace face on both backends using the same measured poses.
-    for position, direction in [([0.26, -0.34, 0.01], -1), ([0.59, 0.34, 0.34], 1)]:
+    for position, direction in [([0.11, -0.64, 0.01], -1), ([0.74, 0.64, 0.44], 1)]:
         clipped_positions = np.array(positions)
         clipped_positions[:, cpu._pinch_site_id] = position
         batched._data.site_xpos = wp.array(clipped_positions, dtype=wp.vec3, device=device)
