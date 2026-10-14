@@ -33,6 +33,7 @@ train = [
     "wandb",
 ]
 dev = [
+    "pytest",
     "ruff",
 ]
 mjwarp = [
