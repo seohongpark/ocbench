@@ -11,8 +11,18 @@ class BlockEnv(ManipulationEnv):
         self,
         env_type='single',
         task_id=1,
+        cube_colors=None,
         **kwargs,
     ):
+        """Block environment.
+
+        Args:
+            env_type: Number of cubes ('single', 'double', 'triple' or 'quadruple').
+            task_id: Task index (1-based).
+            cube_colors: Optional color names, one per cube, overriding the default
+                ('blue', 'red', 'orange', 'green'). Each name must have a 'light' variant in
+                `ManipulationEnv._colors`, used to mark success. CPU environments only.
+        """
         self._env_type = env_type
         self._cube_size = 0.03
         self._min_object_init_dist = 0.09
@@ -34,22 +44,16 @@ class BlockEnv(ManipulationEnv):
         )
 
         # Define constants.
-        self._cube_colors = np.array(
-            [
-                self._colors['blue'],
-                self._colors['red'],
-                self._colors['orange'],
-                self._colors['green'],
-            ]
-        )
-        self._cube_success_colors = np.array(
-            [
-                self._colors['lightblue'],
-                self._colors['lightred'],
-                self._colors['lightorange'],
-                self._colors['lightgreen'],
-            ]
-        )
+        if cube_colors is None:
+            cube_colors = ('blue', 'red', 'orange', 'green')
+        cube_colors = tuple(cube_colors)
+        if len(cube_colors) < self._num_cubes:
+            raise ValueError(f'Need {self._num_cubes} cube colors, got {len(cube_colors)}: {cube_colors}')
+        for name in cube_colors:
+            if name not in self._colors or f'light{name}' not in self._colors:
+                raise ValueError(f'Unsupported cube color: {name!r}')
+        self._cube_colors = np.array([self._colors[name] for name in cube_colors])
+        self._cube_success_colors = np.array([self._colors[f'light{name}'] for name in cube_colors])
 
         self._arm_sampling_bounds = np.asarray([[0.18, -0.50, 0.20], [0.67, 0.50, 0.35]])
         self._object_sampling_bounds = np.asarray([[0.20, -0.55], [0.62, 0.55]])
