@@ -1,3 +1,5 @@
+import itertools
+
 import mujoco
 import numpy as np
 from dm_control import mjcf
@@ -12,6 +14,9 @@ class BlockEnv(ManipulationEnv):
         env_type='single',
         task_id=1,
         cube_colors=None,
+        goal_marker_size=None,
+        goal_marker_line_width=0.01,
+        success_hold_time=1.0,
         **kwargs,
     ):
         """Block environment.
@@ -22,8 +27,23 @@ class BlockEnv(ManipulationEnv):
             cube_colors: Optional color names, one per cube, overriding the default
                 ('blue', 'red', 'orange', 'green'). Each name must have a 'light' variant in
                 `ManipulationEnv._colors`, used to mark success. CPU environments only.
+            goal_marker_size: Optional inner side length (m) of a flat dark-gray square drawn on
+                the table around the fixed goal of the 'single' task. When set, success also
+                becomes stricter: the whole cube lies inside the square, rests flat on the table,
+                touches nothing but the table (released), and is still, for `success_hold_time`
+                seconds; cubes never start on or near the square. Default None keeps the stock
+                scene and success. CPU environments only.
+            goal_marker_line_width: Line width (m) of the goal square.
+            success_hold_time: Seconds the strict success conditions must hold continuously.
         """
         self._env_type = env_type
+        self._goal_marker_size = goal_marker_size
+        self._goal_marker_line_width = goal_marker_line_width
+        self._success_hold_time = success_hold_time
+        self._goal_marker_xy = None
+        self._success_hold_steps = 0
+        if goal_marker_size is not None and env_type != 'single':
+            raise ValueError('goal_marker_size is only supported for the single-cube task.')
         self._cube_size = 0.03
         self._min_object_init_dist = 0.09
 
@@ -180,6 +200,9 @@ class BlockEnv(ManipulationEnv):
         for i in range(self._num_cubes):
             self._cube_target_geoms_list.append(arena_mjcf.find('body', f'object_target_{i}').find_all('geom'))
 
+        if self._goal_marker_size is not None:
+            self._add_goal_marker(arena_mjcf)
+
         # Add cameras.
         cameras = {
             'front': {
@@ -198,7 +221,69 @@ class BlockEnv(ManipulationEnv):
         for camera_name, camera_kwargs in cameras.items():
             arena_mjcf.worldbody.add('camera', name=camera_name, **camera_kwargs)
 
+    def _add_goal_marker(self, arena_mjcf):
+        """Add a flat, collision-free square outline around the fixed goal."""
+        goal_xyzs = [info['goal_xyzs'] for info in self.task_infos if 'goal_xyzs' in info]
+        if len(goal_xyzs) != 1:
+            raise ValueError('The goal marker needs exactly one fixed goal.')
+        self._goal_marker_xy = np.asarray(goal_xyzs[0][0][:2], dtype=float)
+        gx, gy = self._goal_marker_xy
+        line = self._goal_marker_line_width
+        half_thickness = 0.0015
+        offset = self._goal_marker_size / 2 + line / 2  # Line centre distance from the goal.
+        half_length = offset + line / 2  # Lines overlap at the corners.
+        sides = {
+            'px': ((gx + offset, gy), (line / 2, half_length)),
+            'nx': ((gx - offset, gy), (line / 2, half_length)),
+            'py': ((gx, gy + offset), (half_length, line / 2)),
+            'ny': ((gx, gy - offset), (half_length, line / 2)),
+        }
+        for name, ((x, y), (hx, hy)) in sides.items():
+            arena_mjcf.worldbody.add(
+                'geom',
+                name=f'goal_marker_{name}',
+                type='box',
+                pos=(x, y, half_thickness),
+                size=(hx, hy, half_thickness),
+                rgba=self._colors['darkgray'],
+                contype=0,
+                conaffinity=0,
+                group=1,
+            )
+
+    def _near_goal_marker(self):
+        """Whether any cube could overlap the goal marker (used to resample initial states)."""
+        if self._goal_marker_size is None:
+            return False
+        clearance = self._goal_marker_size / 2 + self._goal_marker_line_width + self._cube_size * np.sqrt(2)
+        for i in range(self._num_cubes):
+            xy = self._data.joint(f'object_joint_{i}').qpos[:2]
+            if np.max(np.abs(xy - self._goal_marker_xy)) <= clearance:
+                return True
+        return False
+
+    def goal_marker_conditions(self, i=0):
+        """Instantaneous strict-success conditions for cube `i` (goal marker mode)."""
+        s = self._cube_size
+        gid = self._cube_geom_ids_list[i][0]
+        center = self._data.geom_xpos[gid]
+        rot = self._data.geom_xmat[gid].reshape(3, 3)
+        signs = np.array(list(itertools.product((-1.0, 1.0), repeat=3)))
+        corners = center + (signs * s) @ rot.T
+        inside = bool(np.all(np.abs(corners[:, :2] - self._goal_marker_xy) <= self._goal_marker_size / 2))
+        resting = bool(abs(center[2] - s) <= 0.005)
+        released = True
+        for contact in self._data.contact[: self._data.ncon]:
+            if gid in (contact.geom1, contact.geom2):
+                other = contact.geom2 if contact.geom1 == gid else contact.geom1
+                if other != self._floor_geom_id:
+                    released = False
+                    break
+        still = bool(np.linalg.norm(self._data.joint(f'object_joint_{i}').qvel[:3]) <= 0.02)
+        return {'inside': inside, 'resting': resting, 'released': released, 'still': still}
+
     def post_compilation_objects(self):
+        self._floor_geom_id = self._model.geom('floor').id
         # Cube geom IDs.
         self._cube_geom_ids_list = [
             [self._model.geom(geom.full_identifier).id for geom in cube_geoms] for cube_geoms in self._cube_geoms_list
@@ -212,6 +297,7 @@ class BlockEnv(ManipulationEnv):
         ]
 
     def initialize_episode(self):
+        self._success_hold_steps = 0
         # Set cube colors.
         for i in range(self._num_cubes):
             for gid in self._cube_geom_ids_list[i]:
@@ -231,7 +317,7 @@ class BlockEnv(ManipulationEnv):
             else:
                 block_xyzs = np.array([self._data.joint(f'object_joint_{i}').qpos[:3] for i in range(self._num_cubes)])
                 success = np.all(np.linalg.norm(block_xyzs - goal_xyzs, axis=1) <= 0.04)
-            if not success:
+            if not success and not self._near_goal_marker():
                 break
         if not self._is_stack_anywhere_task():
             for i in range(self._num_cubes):
@@ -247,6 +333,8 @@ class BlockEnv(ManipulationEnv):
 
     def _compute_target_successes(self):
         """Compute target-mocap successes."""
+        if self._goal_marker_size is not None:
+            return [all(self.goal_marker_conditions(i).values()) for i in range(self._num_cubes)]
         cube_successes = []
         for i in range(self._num_cubes):
             obj_pos = self._data.joint(f'object_joint_{i}').qpos[:3]
@@ -282,6 +370,10 @@ class BlockEnv(ManipulationEnv):
         # Check if the cubes are in the target positions.
         cube_successes = self._compute_successes() if self._healthy else [False] * self._num_cubes
         self._success = self._healthy and all(cube_successes)
+        if self._goal_marker_size is not None:
+            # Strict success must hold for `success_hold_time` seconds of control steps.
+            self._success_hold_steps = self._success_hold_steps + 1 if self._success else 0
+            self._success = self._success_hold_steps * self._control_timestep >= self._success_hold_time - 1e-9
 
         # Adjust the colors of the cubes based on success.
         show_targets = not self.cur_task_info.get('hide_targets', False)
@@ -308,6 +400,10 @@ class BlockEnv(ManipulationEnv):
             ob_info[f'privileged/block_{i}_yaw'] = np.array(
                 [lie.SO3(wxyz=self._data.joint(f'object_joint_{i}').qpos[3:]).compute_yaw_radians()]
             )
+        if self._goal_marker_size is not None:
+            # Inside, resting, released, still; and how long they have held.
+            ob_info['privileged/goal_conditions'] = np.array(list(self.goal_marker_conditions(0).values()))
+            ob_info['privileged/success_hold_steps'] = np.array([self._success_hold_steps])
 
     def compute_observation(self):
         if self._ob_type == 'pixels':
